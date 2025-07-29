@@ -15,9 +15,9 @@ import random
 import numpy as np
 
 # Import the enhanced modules
-from drugbank_parser_enhanced import parse_drugbank_xml
+from drugbank_parser import parse_drugbank_xml
 from disease_standardizer import enhance_disease_mapping
-from dataset_builder_v2 import BalancedDatasetBuilderV2
+from dataset_builder import BalancedDatasetBuilderV2
 
 class EnhancedDrugRepositioningPipeline:
     """Enhanced pipeline with better disease balance and overlap."""
