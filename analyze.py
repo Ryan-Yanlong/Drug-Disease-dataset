@@ -1,662 +1,302 @@
-import xml.etree.ElementTree as ET
+# FILE: analyze_enhanced.py
+#
+# DESCRIPTION:
+# Enhanced analysis script that provides detailed statistics about dataset
+# balance, overlap, and distribution.
+
 import pandas as pd
-from tqdm import tqdm
-import re
-from collections import defaultdict
+import numpy as np
+import os
+from collections import Counter
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-def parse_drugbank_xml_fixed(xml_file_path):
+def analyze_dataset_comprehensive(dataset_dir='balanced_drug_disease_dataset_v2'):
     """
-    修复版DrugBank解析器：正确的疾病映射和更高的覆盖率
-    """
-    print("步骤 1: 开始解析DrugBank XML文件（修复版）...")
+    Comprehensive analysis of the drug-disease dataset.
     
+    Args:
+        dataset_dir: Directory containing the dataset files
+    """
+    print(f"\n{'='*60}")
+    print(f"COMPREHENSIVE DATASET ANALYSIS")
+    print(f"Dataset location: {dataset_dir}")
+    print(f"{'='*60}\n")
+
+    # Define file paths
+    interactions_file = os.path.join(dataset_dir, 'drug_disease_interactions.csv')
+    drugs_file = os.path.join(dataset_dir, 'drugs.csv')
+    diseases_file = os.path.join(dataset_dir, 'diseases.csv')
+
+    # Check if files exist
+    if not all(os.path.exists(f) for f in [interactions_file, drugs_file, diseases_file]):
+        print("Error: Dataset files not found. Please run the pipeline first.")
+        return
+
+    # Load data
+    interactions_df = pd.read_csv(interactions_file)
+    drugs_df = pd.read_csv(drugs_file)
+    diseases_df = pd.read_csv(diseases_file)
+
+    # Basic statistics
+    print("1. BASIC STATISTICS")
+    print("-" * 40)
+    print(f"Total drugs: {len(drugs_df):,}")
+    print(f"Total diseases: {len(diseases_df):,}")
+    print(f"Total interactions: {len(interactions_df):,}")
+    print(f"Matrix density: {len(interactions_df) / (len(drugs_df) * len(diseases_df)) * 100:.2f}%")
+    
+    # Interaction breakdown
+    treatments = interactions_df[interactions_df['label'] == 1]
+    side_effects = interactions_df[interactions_df['label'] == -1]
+    
+    print(f"\nTreatment relations: {len(treatments):,} ({len(treatments)/len(interactions_df)*100:.1f}%)")
+    print(f"Side effect relations: {len(side_effects):,} ({len(side_effects)/len(interactions_df)*100:.1f}%)")
+
+    # Drug analysis
+    print("\n2. DRUG OVERLAP ANALYSIS")
+    print("-" * 40)
+    
+    drugs_treatment = set(treatments['drug_id'])
+    drugs_side_effect = set(side_effects['drug_id'])
+    drug_overlap = drugs_treatment.intersection(drugs_side_effect)
+    
+    print(f"Drugs with treatment info: {len(drugs_treatment):,}")
+    print(f"Drugs with side effect info: {len(drugs_side_effect):,}")
+    print(f"Drugs with BOTH: {len(drug_overlap):,}")
+    print(f"Drug overlap rate: {len(drug_overlap)/len(drugs_df)*100:.1f}%")
+    
+    # Drugs exclusive to each category
+    treatment_only_drugs = drugs_treatment - drugs_side_effect
+    side_effect_only_drugs = drugs_side_effect - drugs_treatment
+    print(f"\nDrugs with ONLY treatment info: {len(treatment_only_drugs):,}")
+    print(f"Drugs with ONLY side effect info: {len(side_effect_only_drugs):,}")
+
+    # Disease analysis
+    print("\n3. DISEASE OVERLAP ANALYSIS")
+    print("-" * 40)
+    
+    diseases_treatment = set(treatments['disease_id'])
+    diseases_side_effect = set(side_effects['disease_id'])
+    disease_overlap = diseases_treatment.intersection(diseases_side_effect)
+    
+    print(f"Diseases as treatment targets: {len(diseases_treatment):,}")
+    print(f"Diseases as side effects: {len(diseases_side_effect):,}")
+    print(f"Diseases appearing as BOTH: {len(disease_overlap):,}")
+    print(f"Disease overlap rate: {len(disease_overlap)/len(diseases_df)*100:.1f}%")
+    
+    # Diseases exclusive to each category
+    treatment_only_diseases = diseases_treatment - diseases_side_effect
+    side_effect_only_diseases = diseases_side_effect - diseases_treatment
+    print(f"\nDiseases ONLY as treatment targets: {len(treatment_only_diseases):,}")
+    print(f"Diseases ONLY as side effects: {len(side_effect_only_diseases):,}")
+
+    # Distribution analysis
+    print("\n4. DISTRIBUTION ANALYSIS")
+    print("-" * 40)
+    
+    # Drug degree distribution
+    drug_treatment_counts = treatments['drug_id'].value_counts()
+    drug_side_effect_counts = side_effects['drug_id'].value_counts()
+    
+    print(f"\nDrug-Treatment Distribution:")
+    print(f"  Mean treatments per drug: {drug_treatment_counts.mean():.2f}")
+    print(f"  Median treatments per drug: {drug_treatment_counts.median():.0f}")
+    print(f"  Max treatments per drug: {drug_treatment_counts.max()}")
+    
+    print(f"\nDrug-Side Effect Distribution:")
+    print(f"  Mean side effects per drug: {drug_side_effect_counts.mean():.2f}")
+    print(f"  Median side effects per drug: {drug_side_effect_counts.median():.0f}")
+    print(f"  Max side effects per drug: {drug_side_effect_counts.max()}")
+    
+    # Disease degree distribution
+    disease_treatment_counts = treatments['disease_id'].value_counts()
+    disease_side_effect_counts = side_effects['disease_id'].value_counts()
+    
+    print(f"\nDisease-Treatment Distribution:")
+    print(f"  Mean drugs per treatment target: {disease_treatment_counts.mean():.2f}")
+    print(f"  Median drugs per treatment target: {disease_treatment_counts.median():.0f}")
+    print(f"  Max drugs per treatment target: {disease_treatment_counts.max()}")
+    
+    print(f"\nDisease-Side Effect Distribution:")
+    print(f"  Mean drugs causing disease as side effect: {disease_side_effect_counts.mean():.2f}")
+    print(f"  Median drugs causing disease as side effect: {disease_side_effect_counts.median():.0f}")
+    print(f"  Max drugs causing disease as side effect: {disease_side_effect_counts.max()}")
+
+    # Top diseases analysis
+    print("\n5. TOP DISEASES ANALYSIS")
+    print("-" * 40)
+    
+    # Convert value_counts to DataFrame with proper column names
+    disease_treatment_counts_df = disease_treatment_counts.reset_index()
+    disease_treatment_counts_df.columns = ['disease_id', 'treatment_count']
+    
+    disease_side_effect_counts_df = disease_side_effect_counts.reset_index()
+    disease_side_effect_counts_df.columns = ['disease_id', 'side_effect_count']
+    
+    # Merge with disease names
+    disease_treatment_df = pd.merge(
+        disease_treatment_counts_df,
+        diseases_df,
+        on='disease_id'
+    )[['disease_name', 'disease_id', 'treatment_count']]
+    
+    disease_side_effect_df = pd.merge(
+        disease_side_effect_counts_df,
+        diseases_df,
+        on='disease_id'
+    )[['disease_name', 'disease_id', 'side_effect_count']]
+    
+    print("\nTop 10 Treatment Targets:")
+    for _, row in disease_treatment_df.nlargest(10, 'treatment_count').iterrows():
+        print(f"  {row['disease_name']}: {row['treatment_count']} drugs")
+    
+    print("\nTop 10 Side Effects:")
+    for _, row in disease_side_effect_df.nlargest(10, 'side_effect_count').iterrows():
+        print(f"  {row['disease_name']}: {row['side_effect_count']} drugs")
+
+    # Overlap diseases details
+    if len(disease_overlap) > 0:
+        print("\n6. OVERLAP DISEASES DETAILS")
+        print("-" * 40)
+        print(f"Total diseases appearing in both contexts: {len(disease_overlap)}")
+        
+        # Get details for overlap diseases
+        overlap_df = diseases_df[diseases_df['disease_id'].isin(disease_overlap)].copy()
+        
+        # Add counts
+        overlap_df['treatment_count'] = overlap_df['disease_id'].map(
+            disease_treatment_counts.to_dict()
+        ).fillna(0).astype(int)
+        overlap_df['side_effect_count'] = overlap_df['disease_id'].map(
+            disease_side_effect_counts.to_dict()
+        ).fillna(0).astype(int)
+        overlap_df['total_count'] = overlap_df['treatment_count'] + overlap_df['side_effect_count']
+        
+        print("\nTop 10 Overlap Diseases (by total connections):")
+        for _, row in overlap_df.nlargest(10, 'total_count').iterrows():
+            print(f"  {row['disease_name']}:")
+            print(f"    - As treatment: {row['treatment_count']} drugs")
+            print(f"    - As side effect: {row['side_effect_count']} drugs")
+
+    # Save summary report
+    report_file = os.path.join(dataset_dir, 'dataset_analysis_report.txt')
+    with open(report_file, 'w') as f:
+        f.write(f"Dataset Analysis Report\n")
+        f.write(f"Generated from: {dataset_dir}\n")
+        f.write(f"{'='*60}\n\n")
+        f.write(f"Summary Statistics:\n")
+        f.write(f"- Total drugs: {len(drugs_df)}\n")
+        f.write(f"- Total diseases: {len(diseases_df)}\n")
+        f.write(f"- Total interactions: {len(interactions_df)}\n")
+        f.write(f"- Drug overlap rate: {len(drug_overlap)/len(drugs_df)*100:.1f}%\n")
+        f.write(f"- Disease overlap rate: {len(disease_overlap)/len(diseases_df)*100:.1f}%\n")
+        f.write(f"- Treatment/Side-effect ratio: {len(treatments)}/{len(side_effects)}\n")
+    
+    print(f"\n{'='*60}")
+    print(f"Analysis complete! Report saved to: {report_file}")
+    print(f"{'='*60}")
+
+    return {
+        'n_drugs': len(drugs_df),
+        'n_diseases': len(diseases_df),
+        'n_interactions': len(interactions_df),
+        'drug_overlap_rate': len(drug_overlap)/len(drugs_df)*100,
+        'disease_overlap_rate': len(disease_overlap)/len(diseases_df)*100,
+        'treatment_ratio': len(treatments)/len(interactions_df)*100
+    }
+
+
+def plot_distributions(dataset_dir='balanced_drug_disease_dataset_v2'):
+    """Create visualization plots for the dataset."""
     try:
-        context = ET.iterparse(xml_file_path, events=('start', 'end'))
-        _, root = next(context)
-    except ET.ParseError as e:
-        print(f"XML 文件解析失败！错误: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError:
+        print("Matplotlib/Seaborn not installed. Skipping visualizations.")
+        return
     
-    namespace = ''
-    if '}' in root.tag:
-        namespace = root.tag.split('}')[0][1:]
-    ns_map = {'db': namespace}
+    # Load data
+    interactions_df = pd.read_csv(os.path.join(dataset_dir, 'drug_disease_interactions.csv'))
+    treatments = interactions_df[interactions_df['label'] == 1]
+    side_effects = interactions_df[interactions_df['label'] == -1]
     
-    drugs_data = []
-    therapeutic_data = []
+    # Create figure
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig.suptitle('Dataset Distribution Analysis', fontsize=16)
     
-    # 统计信息
-    stats = defaultdict(int)
-    drugs_without_info = []
+    # Drug degree distributions
+    ax = axes[0, 0]
+    drug_treatment_counts = treatments['drug_id'].value_counts()
+    drug_side_effect_counts = side_effects['drug_id'].value_counts()
     
-    for event, elem in tqdm(context, desc="Parsing DrugBank"):
-        if event == 'end' and elem.tag == f"{{{namespace}}}drug":
-            # 只处理小分子药物
-            if elem.attrib.get('type') != 'small molecule':
-                elem.clear()
-                root.clear()
-                continue
-            
-            # 基本信息
-            db_id_node = elem.find('db:drugbank-id[@primary="true"]', ns_map)
-            name_node = elem.find('db:name', ns_map)
-            
-            if db_id_node is None or name_node is None:
-                elem.clear()
-                root.clear()
-                continue
-            
-            drugbank_id = db_id_node.text
-            name = name_node.text
-            
-            # SMILES
-            smiles_node = elem.find("db:calculated-properties/db:property[db:kind='SMILES']/db:value", ns_map)
-            smiles = smiles_node.text if smiles_node is not None else None
-            
-            if not smiles:
-                elem.clear()
-                root.clear()
-                continue
-            
-            # 描述
-            descr_node = elem.find('db:description', ns_map)
-            description = (
-                ET.tostring(descr_node, method='text', encoding='unicode').strip()
-                if descr_node is not None else ""
-            )
-            
-            drugs_data.append({
-                'drug_id': drugbank_id,
-                'name': name,
-                'smiles': smiles,
-                'description': description
-            })
-            
-            # 收集所有治疗相关信息
-            drug_therapeutic_info = []
-            
-            # 1. 传统indication（最高优先级）
-            indications_found = set()
-            
-            # 方法1: db:indications/db:indication
-            indications_wrapper = elem.find('db:indications', ns_map)
-            if indications_wrapper is not None:
-                for ind in indications_wrapper.findall('db:indication', ns_map):
-                    if ind.text and ind.text.strip():
-                        indication_text = ind.text.strip()
-                        # 从indication文本中提取疾病
-                        diseases = extract_diseases_from_indication(indication_text)
-                        for disease in diseases:
-                            indications_found.add(disease)
-                            drug_therapeutic_info.append({
-                                'drug_id': drugbank_id,
-                                'disease_name': disease,
-                                'source': 'indication',
-                                'confidence': 1.0
-                            })
-                        stats['indication'] += len(diseases)
-            
-            # 方法2: 直接的 db:indication
-            for ind in elem.findall('db:indication', ns_map):
-                if ind.text and ind.text.strip():
-                    indication_text = ind.text.strip()
-                    diseases = extract_diseases_from_indication(indication_text)
-                    for disease in diseases:
-                        if disease not in indications_found:
-                            indications_found.add(disease)
-                            drug_therapeutic_info.append({
-                                'drug_id': drugbank_id,
-                                'disease_name': disease,
-                                'source': 'indication',
-                                'confidence': 1.0
-                            })
-                            stats['indication'] += 1
-            
-            # 2. Categories (药物分类)
-            categories_elem = elem.find('db:categories', ns_map)
-            if categories_elem is not None:
-                for cat in categories_elem.findall('db:category', ns_map):
-                    cat_name = cat.find('db:category', ns_map)
-                    if cat_name is not None and cat_name.text:
-                        category_text = cat_name.text.strip()
-                        diseases = convert_category_to_diseases(category_text)
-                        for disease in diseases:
-                            if disease and disease.lower() not in indications_found:
-                                drug_therapeutic_info.append({
-                                    'drug_id': drugbank_id,
-                                    'disease_name': disease,
-                                    'source': 'category',
-                                    'confidence': 0.8
-                                })
-                                stats['category'] += 1
-            
-            # 3. ATC codes
-            atc_codes_elem = elem.find('db:atc-codes', ns_map)
-            if atc_codes_elem is not None:
-                for atc in atc_codes_elem.findall('db:atc-code', ns_map):
-                    # 获取所有level的信息
-                    for level in atc:
-                        level_tag = level.tag.replace(f"{{{namespace}}}", "")
-                        if level.text and 'level' in level_tag:
-                            atc_text = level.text.strip()
-                            diseases = convert_atc_to_diseases(atc_text)
-                            for disease in diseases:
-                                if disease and disease.lower() not in indications_found:
-                                    drug_therapeutic_info.append({
-                                        'drug_id': drugbank_id,
-                                        'disease_name': disease,
-                                        'source': 'atc',
-                                        'confidence': 0.7
-                                    })
-                                    stats['atc'] += 1
-            
-            # 4. 从描述中提取（如果还没有找到任何治疗信息）
-            if not drug_therapeutic_info and description:
-                diseases = extract_diseases_from_text(description[:500])  # 只看前500字符
-                for disease in diseases:
-                    drug_therapeutic_info.append({
-                        'drug_id': drugbank_id,
-                        'disease_name': disease,
-                        'source': 'description',
-                        'confidence': 0.5
-                    })
-                    stats['description'] += 1
-            
-            # 5. Groups (如果还是没有信息)
-            if not drug_therapeutic_info:
-                groups_elem = elem.find('db:groups', ns_map)
-                if groups_elem is not None:
-                    for group in groups_elem.findall('db:group', ns_map):
-                        if group.text and group.text.strip() == 'approved':
-                            # 给approved药物一个通用分类
-                            drug_therapeutic_info.append({
-                                'drug_id': drugbank_id,
-                                'disease_name': 'general therapeutic use',
-                                'source': 'group',
-                                'confidence': 0.3
-                            })
-                            stats['group'] += 1
-                            break
-            
-            # 去重并添加到总列表
-            seen = set()
-            for info in drug_therapeutic_info:
-                key = (info['drug_id'], info['disease_name'].lower())
-                if key not in seen:
-                    seen.add(key)
-                    therapeutic_data.append(info)
-            
-            # 记录没有找到信息的药物
-            if not drug_therapeutic_info:
-                drugs_without_info.append((drugbank_id, name))
-            
-            elem.clear()
-            root.clear()
+    ax.hist([drug_treatment_counts, drug_side_effect_counts], 
+            bins=30, alpha=0.7, label=['Treatments', 'Side Effects'])
+    ax.set_xlabel('Number of relations per drug')
+    ax.set_ylabel('Count')
+    ax.set_title('Drug Degree Distribution')
+    ax.legend()
     
-    df_drugs = pd.DataFrame(drugs_data)
-    df_therapeutic = pd.DataFrame(therapeutic_data)
+    # Disease degree distributions
+    ax = axes[0, 1]
+    disease_treatment_counts = treatments['disease_id'].value_counts()
+    disease_side_effect_counts = side_effects['disease_id'].value_counts()
     
-    # 打印统计信息
-    print(f"\n解析完成！")
-    print(f"找到 {len(df_drugs)} 个小分子药物")
-    print(f"找到 {len(df_therapeutic)} 条治疗关系")
+    ax.hist([disease_treatment_counts, disease_side_effect_counts], 
+            bins=30, alpha=0.7, label=['As Treatment', 'As Side Effect'])
+    ax.set_xlabel('Number of drugs per disease')
+    ax.set_ylabel('Count')
+    ax.set_title('Disease Degree Distribution')
+    ax.legend()
     
-    print(f"\n治疗信息来源分布:")
-    for source, count in stats.items():
-        print(f"  {source}: {count}")
+    # Overlap visualization
+    ax = axes[1, 0]
+    diseases_treatment = set(treatments['disease_id'])
+    diseases_side_effect = set(side_effects['disease_id'])
     
-    # 统计有治疗信息的药物
-    drugs_with_info = df_therapeutic['drug_id'].nunique()
-    print(f"\n有治疗信息的药物: {drugs_with_info} ({drugs_with_info/len(df_drugs)*100:.1f}%)")
-    
-    # 统计每个药物的平均治疗关系数
-    avg_relations = len(df_therapeutic) / drugs_with_info if drugs_with_info > 0 else 0
-    print(f"平均每个药物的治疗关系数: {avg_relations:.2f}")
-    
-    # 显示一些没有找到信息的药物
-    if drugs_without_info:
-        print(f"\n没有找到治疗信息的药物数: {len(drugs_without_info)}")
-        print("示例（前5个）:")
-        for drug_id, name in drugs_without_info[:5]:
-            print(f"  {drug_id}: {name}")
-    
-    return df_drugs, df_therapeutic
-
-
-def extract_diseases_from_indication(indication_text):
-    """
-    从indication文本中提取具体的疾病名称
-    """
-    diseases = []
-    text_lower = indication_text.lower()
-    
-    # 常见的indication模式
-    patterns = [
-        r'treatment of (.+?)(?:\.|,|;|$)',
-        r'indicated for (.+?)(?:\.|,|;|$)',
-        r'used for (.+?)(?:\.|,|;|$)',
-        r'management of (.+?)(?:\.|,|;|$)',
-        r'therapy for (.+?)(?:\.|,|;|$)',
-        r'prevention of (.+?)(?:\.|,|;|$)',
-        r'prophylaxis of (.+?)(?:\.|,|;|$)',
-        r'relief of (.+?)(?:\.|,|;|$)',
+    venn_data = [
+        len(diseases_treatment - diseases_side_effect),
+        len(diseases_side_effect - diseases_treatment),
+        len(diseases_treatment.intersection(diseases_side_effect))
     ]
     
-    # 提取疾病
-    for pattern in patterns:
-        matches = re.findall(pattern, text_lower)
-        for match in matches:
-            # 清理和分割多个疾病
-            diseases_in_match = re.split(r' and | or |, ', match)
-            for disease in diseases_in_match:
-                disease = disease.strip()
-                # 移除一些常见的修饰词
-                disease = re.sub(r'^(the |acute |chronic |severe |mild |moderate )', '', disease)
-                disease = re.sub(r'( in patients| in adults| in children).*$', '', disease)
-                if len(disease) > 3 and disease not in ['use', 'users', 'patient', 'patients']:
-                    diseases.append(disease)
+    ax.bar(['Treatment Only', 'Side Effect Only', 'Both'], venn_data)
+    ax.set_ylabel('Number of Diseases')
+    ax.set_title('Disease Category Distribution')
     
-    # 如果没有找到，返回简化的完整文本
-    if not diseases and len(indication_text) < 100:
-        # 移除常见的前缀
-        simplified = re.sub(r'^(For |Used for |Indicated for |Treatment of )', '', indication_text)
-        simplified = simplified.strip().rstrip('.')
-        if len(simplified) > 3:
-            diseases.append(simplified)
+    # Summary stats
+    ax = axes[1, 1]
+    ax.axis('off')
+    stats_text = f"""Dataset Summary:
     
-    return diseases[:3]  # 最多返回3个疾病
+Total Interactions: {len(interactions_df):,}
+Treatment Relations: {len(treatments):,}
+Side Effect Relations: {len(side_effects):,}
+
+Disease Overlap: {venn_data[2]/sum(venn_data)*100:.1f}%
+Treatment Ratio: {len(treatments)/len(interactions_df)*100:.1f}%
+"""
+    ax.text(0.1, 0.5, stats_text, fontsize=12, verticalalignment='center')
+    
+    plt.tight_layout()
+    plot_file = os.path.join(dataset_dir, 'dataset_distributions.png')
+    plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+    print(f"\nVisualization saved to: {plot_file}")
+    plt.close()
 
 
-def convert_category_to_diseases(category):
-    """
-    将药物类别转换为疾病列表（修复版）
-    """
-    # 更准确的类别映射
-    category_mapping = {
-        # 抗感染类
-        'Anti-Bacterial Agents': ['bacterial infections'],
-        'Antibiotics': ['bacterial infections'],
-        'Antiviral Agents': ['viral infections'],
-        'Antifungal Agents': ['fungal infections'],
-        'Antiparasitic Products': ['parasitic infections'],
-        'Anti-Infective Agents': ['infections'],
-        'Antimalarials': ['malaria'],
-        'Antitubercular Agents': ['tuberculosis'],
-        
-        # 肿瘤类
-        'Antineoplastic Agents': ['cancer'],
-        'Antimetabolites': ['cancer'],
-        'Antineoplastic and Immunomodulating Agents': ['cancer', 'immune disorders'],
-        
-        # 心血管类
-        'Antihypertensive Agents': ['hypertension'],
-        'Antiarrhythmic Agents': ['arrhythmia'],
-        'Antianginal Agents': ['angina'],
-        'Cardiovascular Agents': ['cardiovascular diseases'],
-        'Vasodilator Agents': ['vascular disorders'],
-        'Platelet Aggregation Inhibitors': ['thrombosis'],
-        'Anticoagulants': ['blood clots', 'thrombosis'],
-        'Antithrombotic Agents': ['thrombosis'],
-        'Thrombin Inhibitors': ['thrombosis', 'blood clotting disorders'],
-        'Factor Xa Inhibitors': ['thrombosis'],
-        'Diuretics': ['fluid retention', 'hypertension'],
-        'Beta Blocking Agents': ['hypertension', 'heart diseases'],
-        'Calcium Channel Blockers': ['hypertension', 'angina'],
-        'ACE Inhibitors': ['hypertension', 'heart failure'],
-        'Angiotensin Receptor Blockers': ['hypertension'],
-        
-        # 神经精神类
-        'Antidepressive Agents': ['depression'],
-        'Antipsychotic Agents': ['psychosis', 'schizophrenia'],
-        'Anti-Anxiety Agents': ['anxiety'],
-        'Anxiolytics': ['anxiety'],
-        'Hypnotics and Sedatives': ['insomnia'],
-        'Anticonvulsants': ['epilepsy', 'seizures'],
-        'Antiparkinsonian Agents': ['parkinson disease'],
-        'Central Nervous System Agents': ['nervous system disorders'],
-        'Analgesics': ['pain'],
-        'Antimigraine Agents': ['migraine'],
-        'Muscle Relaxants': ['muscle spasms', 'muscle disorders'],
-        
-        # 代谢内分泌类
-        'Antidiabetic Agents': ['diabetes'],
-        'Hypoglycemic Agents': ['diabetes'],
-        'Thyroid Agents': ['thyroid disorders'],
-        'Hormones': ['hormonal disorders'],
-        'Corticosteroids': ['inflammatory conditions', 'autoimmune disorders'],
-        'Sex Hormones': ['hormonal imbalances'],
-        'Contraceptives': ['contraception'],
-        'Anti-Obesity Agents': ['obesity'],
-        'Lipid Regulating Agents': ['dyslipidemia', 'high cholesterol'],
-        'Bone Density Conservation Agents': ['osteoporosis'],
-        
-        # 消化系统类
-        'Gastrointestinal Agents': ['gastrointestinal disorders'],
-        'Antiemetics': ['nausea', 'vomiting'],
-        'Antacids': ['acid reflux', 'heartburn'],
-        'Proton Pump Inhibitors': ['acid reflux', 'peptic ulcers'],
-        'H2 Antagonists': ['acid reflux', 'ulcers'],
-        'Laxatives': ['constipation'],
-        'Antidiarrheals': ['diarrhea'],
-        'Antiulcer Agents': ['ulcers'],
-        
-        # 呼吸系统类
-        'Respiratory System Agents': ['respiratory diseases'],
-        'Bronchodilator Agents': ['asthma', 'COPD'],
-        'Antitussive Agents': ['cough'],
-        'Expectorants': ['cough with mucus'],
-        'Decongestants': ['nasal congestion'],
-        'Antihistamines': ['allergies', 'allergic rhinitis'],
-        
-        # 炎症免疫类
-        'Anti-Inflammatory Agents': ['inflammation'],
-        'Immunosuppressive Agents': ['autoimmune diseases', 'organ rejection'],
-        'Immunomodulatory Agents': ['immune system disorders'],
-        'Antipyretics': ['fever'],
-        'Antirheumatic Agents': ['rheumatoid arthritis'],
-        
-        # 皮肤类
-        'Dermatologic Agents': ['skin conditions'],
-        'Antipsoriatic Agents': ['psoriasis'],
-        'Antiacne Agents': ['acne'],
-        
-        # 泌尿系统类
-        'Urological Agents': ['urological disorders'],
-        
-        # 血液类
-        'Hematologic Agents': ['blood disorders'],
-        'Antianemic Agents': ['anemia'],
-        
-        # 其他
-        'Enzyme Inhibitors': ['enzyme-related disorders'],
-        'Vitamins': ['vitamin deficiency'],
-        'Minerals': ['mineral deficiency'],
-        'Nutritional Support': ['nutritional deficiency'],
-        'Chelating Agents': ['heavy metal poisoning'],
-        'Antiseptics': ['wound infections'],
-        'Disinfectants': ['surface disinfection'],
-        'Anesthetics': ['anesthesia', 'pain during procedures'],
-    }
-    
-    # 先尝试完全匹配
-    if category in category_mapping:
-        return category_mapping[category]
-    
-    # 尝试部分匹配
-    category_lower = category.lower()
-    diseases = []
-    
-    for key, value in category_mapping.items():
-        key_lower = key.lower()
-        # 检查是否包含关键词
-        if key_lower in category_lower or category_lower in key_lower:
-            diseases.extend(value)
-    
-    # 如果还没找到，尝试更通用的规则
-    if not diseases:
-        # 处理包含"Agents"的类别
-        if 'agents' in category_lower:
-            # 提取关键词
-            if 'anti' in category_lower:
-                match = re.search(r'anti[- ]?(\w+)', category_lower)
-                if match:
-                    target = match.group(1)
-                    if target not in ['agents', 'drug', 'drugs']:
-                        diseases.append(f"{target}")
-            
-        # 处理"inhibitors"
-        elif 'inhibitors' in category_lower:
-            match = re.search(r'(\w+)\s+inhibitors', category_lower)
-            if match:
-                target = match.group(1)
-                diseases.append(f"{target}-related disorders")
-        
-        # 处理"blockers"
-        elif 'blockers' in category_lower:
-            match = re.search(r'(\w+)\s+blockers', category_lower)
-            if match:
-                target = match.group(1)
-                diseases.append(f"{target}-related disorders")
-    
-    return diseases
-
-
-def convert_atc_to_diseases(atc_text):
-    """
-    将ATC分类转换为疾病列表（修复版）
-    """
-    atc_text_lower = atc_text.lower()
-    
-    # 更全面的ATC映射
-    atc_mapping = {
-        # 主要系统
-        'alimentary tract and metabolism': ['gastrointestinal disorders', 'metabolic disorders'],
-        'blood and blood forming organs': ['blood disorders', 'anemia'],
-        'cardiovascular system': ['cardiovascular diseases'],
-        'dermatologicals': ['skin diseases'],
-        'genito urinary system and sex hormones': ['genitourinary disorders', 'hormonal disorders'],
-        'systemic hormonal preparations': ['hormonal disorders'],
-        'antiinfectives for systemic use': ['infections'],
-        'antineoplastic and immunomodulating agents': ['cancer', 'immune disorders'],
-        'musculo-skeletal system': ['musculoskeletal disorders'],
-        'nervous system': ['neurological disorders'],
-        'antiparasitic products': ['parasitic infections'],
-        'respiratory system': ['respiratory diseases'],
-        'sensory organs': ['eye diseases', 'ear disorders'],
-        
-        # 更具体的子分类
-        'antibacterials for systemic use': ['bacterial infections'],
-        'antimycotics for systemic use': ['fungal infections'],
-        'antivirals for systemic use': ['viral infections'],
-        'vaccines': ['disease prevention'],
-        'antidiabetes drugs': ['diabetes'],
-        'psycholeptics': ['psychiatric disorders', 'anxiety', 'insomnia'],
-        'psychoanaleptics': ['depression', 'ADHD'],
-        'analgesics': ['pain'],
-        'anesthetics': ['anesthesia'],
-        'antiepileptics': ['epilepsy'],
-        'anti-parkinson drugs': ['parkinson disease'],
-        'drugs used in addictive disorders': ['addiction'],
-        'cardiac therapy': ['heart diseases'],
-        'antihypertensives': ['hypertension'],
-        'diuretics': ['fluid retention', 'hypertension'],
-        'peripheral vasodilators': ['peripheral vascular disease'],
-        'vasoprotectives': ['vascular disorders'],
-        'beta blocking agents': ['hypertension', 'heart diseases'],
-        'calcium channel blockers': ['hypertension', 'angina'],
-        'agents acting on the renin-angiotensin system': ['hypertension', 'heart failure'],
-        'lipid modifying agents': ['dyslipidemia', 'high cholesterol'],
-        'antithrombotic agents': ['thrombosis', 'stroke prevention'],
-        'antihemorrhagics': ['bleeding disorders'],
-        'corticosteroids for systemic use': ['inflammatory conditions', 'autoimmune disorders'],
-        'thyroid therapy': ['thyroid disorders'],
-        'calcium homeostasis': ['calcium disorders', 'osteoporosis'],
-        'insulins and analogues': ['diabetes'],
-        'blood glucose lowering drugs': ['diabetes'],
-        'sex hormones and modulators': ['hormonal disorders', 'reproductive disorders'],
-        'urologicals': ['urological disorders', 'prostate disorders'],
-        'drugs for obstructive airway diseases': ['asthma', 'COPD'],
-        'cough and cold preparations': ['cough', 'cold symptoms'],
-        'antihistamines for systemic use': ['allergies'],
-        'ophthalmologicals': ['eye diseases'],
-        'otologicals': ['ear disorders'],
-        
-        # 治疗用途
-        'antacids': ['acid reflux', 'heartburn'],
-        'drugs for peptic ulcer': ['peptic ulcers'],
-        'antiemetics and antinauseants': ['nausea', 'vomiting'],
-        'bile and liver therapy': ['liver disorders'],
-        'laxatives': ['constipation'],
-        'antidiarrheals': ['diarrhea'],
-        'anti-inflammatory and antirheumatic products': ['inflammation', 'rheumatic disorders'],
-        'topical products for joint and muscular pain': ['joint pain', 'muscle pain'],
-        'antigout preparations': ['gout'],
-        'drugs for treatment of bone diseases': ['bone diseases', 'osteoporosis'],
-        'muscle relaxants': ['muscle spasms'],
-        'antifungals for dermatological use': ['fungal skin infections'],
-        'emollients and protectives': ['dry skin', 'skin protection'],
-        'antipsoriatics': ['psoriasis'],
-        'antibiotics and chemotherapeutics for dermatological use': ['skin infections'],
-        'corticosteroids, dermatological preparations': ['skin inflammation'],
-        'antiseptics and disinfectants': ['infections', 'wound care'],
-        'medicated dressings': ['wound healing'],
-        'antipruritics': ['itching'],
-        'antiacne preparations': ['acne'],
-    }
-    
-    diseases = []
-    
-    # 尝试匹配
-    for key, value in atc_mapping.items():
-        if key in atc_text_lower:
-            diseases.extend(value)
-    
-    # 如果没有直接匹配，尝试提取关键信息
-    if not diseases:
-        # 处理"therapy"模式
-        if 'therapy' in atc_text_lower:
-            match = re.search(r'(\w+)\s+therapy', atc_text_lower)
-            if match:
-                organ = match.group(1)
-                if organ not in ['drug', 'drugs']:
-                    diseases.append(f"{organ} disorders")
-        
-        # 处理"drugs for"模式
-        elif 'drugs for' in atc_text_lower:
-            match = re.search(r'drugs for (.+)', atc_text_lower)
-            if match:
-                condition = match.group(1).strip()
-                diseases.append(condition)
-        
-        # 处理"anti-"前缀
-        elif 'anti' in atc_text_lower:
-            match = re.search(r'anti[- ]?(\w+)', atc_text_lower)
-            if match:
-                target = match.group(1)
-                if target.endswith('s'):
-                    target = target[:-1]  # 移除复数
-                diseases.append(target)
-    
-    # 去重
-    return list(set(diseases))
-
-
-def extract_diseases_from_text(text):
-    """
-    从文本中提取疾病名称（改进版）
-    """
-    diseases = []
-    text_lower = text.lower()
-    
-    # 疾病提取模式
-    patterns = [
-        r'treatment of ([^,\.;]+)',
-        r'indicated for ([^,\.;]+)',
-        r'used for ([^,\.;]+)',
-        r'effective against ([^,\.;]+)',
-        r'management of ([^,\.;]+)',
-        r'therapy for ([^,\.;]+)',
-        r'prevention of ([^,\.;]+)',
-        r'relief of ([^,\.;]+)',
-        r'treatment and control of ([^,\.;]+)',
-        r'prophylaxis of ([^,\.;]+)',
-    ]
-    
-    # 常见疾病关键词
-    disease_keywords = [
-        'infection', 'cancer', 'tumor', 'carcinoma', 'lymphoma', 'leukemia',
-        'disease', 'disorder', 'syndrome', 'condition',
-        'pain', 'inflammation', 'fever', 'allergy', 'allergies',
-        'diabetes', 'hypertension', 'depression', 'anxiety', 'psychosis',
-        'epilepsy', 'seizure', 'asthma', 'arthritis', 'osteoporosis',
-        'migraine', 'headache', 'insomnia', 'obesity',
-        'anemia', 'pneumonia', 'bronchitis', 'gastritis', 'colitis',
-        'hepatitis', 'nephritis', 'dermatitis', 'rhinitis',
-        'sinusitis', 'pharyngitis', 'meningitis', 'encephalitis',
-        'thrombosis', 'embolism', 'ischemia', 'hemorrhage', 'stroke',
-        'infarction', 'failure', 'insufficiency', 'deficiency',
-        'ulcer', 'reflux', 'nausea', 'vomiting', 'diarrhea', 'constipation',
-        'acne', 'psoriasis', 'eczema', 'rash',
-        'angina', 'arrhythmia', 'fibrillation',
-        'cough', 'cold', 'flu', 'influenza',
-        'malaria', 'tuberculosis', 'HIV', 'AIDS'
-    ]
-    
-    # 使用模式提取
-    for pattern in patterns:
-        matches = re.findall(pattern, text_lower)
-        for match in matches:
-            match = match.strip()
-            # 清理
-            match = re.sub(r'^(the |acute |chronic |severe |mild |moderate )', '', match)
-            match = re.sub(r'( in patients| in adults| in children).*$', '', match)
-            
-            # 检查是否包含疾病关键词
-            if any(keyword in match for keyword in disease_keywords):
-                if len(match) > 3 and match not in diseases:
-                    diseases.append(match)
-    
-    # 如果没有找到，查找包含疾病关键词的短语
-    if not diseases:
-        for keyword in disease_keywords[:30]:  # 只用最常见的30个
-            if keyword in text_lower:
-                # 找到关键词的位置
-                index = text_lower.find(keyword)
-                # 提取周围的词
-                start = max(0, index - 30)
-                end = min(len(text_lower), index + len(keyword) + 30)
-                context = text_lower[start:end]
-                
-                # 提取包含关键词的短语
-                words = context.split()
-                for i, word in enumerate(words):
-                    if keyword in word:
-                        # 获取前后的词
-                        phrase_start = max(0, i - 2)
-                        phrase_end = min(len(words), i + 3)
-                        phrase = ' '.join(words[phrase_start:phrase_end])
-                        
-                        # 清理
-                        phrase = re.sub(r'[^\w\s-]', '', phrase)
-                        phrase = phrase.strip()
-                        
-                        if len(phrase) > len(keyword) and phrase not in diseases:
-                            diseases.append(phrase)
-                            break
-    
-    # 去重和清理
-    unique_diseases = []
-    seen = set()
-    for disease in diseases:
-        disease_clean = disease.strip().lower()
-        # 移除太短或太长的
-        if 3 < len(disease_clean) < 50 and disease_clean not in seen:
-            seen.add(disease_clean)
-            unique_diseases.append(disease_clean)
-    
-    return unique_diseases[:3]  # 最多返回3个
-
-
-# 使用示例
 if __name__ == '__main__':
-    df_drugs, df_therapeutic = parse_drugbank_xml_fixed('drugbank.xml')
+    # Check both possible dataset directories
+    if os.path.exists('balanced_drug_disease_dataset_v2'):
+        dataset_dir = 'balanced_drug_disease_dataset_v2'
+    elif os.path.exists('balanced_drug_disease_dataset'):
+        dataset_dir = 'balanced_drug_disease_dataset'
+    else:
+        print("No dataset directory found. Please run the pipeline first.")
+        exit(1)
     
-    # 保存结果
-    df_drugs.to_csv('drugs_fixed.csv', index=False)
-    df_therapeutic.to_csv('drug_disease_relations_fixed.csv', index=False)
+    # Run comprehensive analysis
+    results = analyze_dataset_comprehensive(dataset_dir)
     
-    print("\n数据已保存到:")
-    print("  - drugs_fixed.csv")
-    print("  - drug_disease_relations_fixed.csv")
-    
-    # 展示一些示例
-    print("\n治疗关系示例（前30条）:")
-    sample = df_therapeutic.head(30)
-    for _, row in sample.iterrows():
-        print(f"  {row['drug_id']} -> {row['disease_name']} (来源: {row['source']}, 置信度: {row['confidence']})")
-    
-    # 统计每个置信度级别的数量
-    print("\n置信度分布:")
-    confidence_counts = df_therapeutic['confidence'].value_counts().sort_index(ascending=False)
-    for conf, count in confidence_counts.items():
-        print(f"  {conf}: {count} ({count/len(df_therapeutic)*100:.1f}%)")
+    # Create visualizations if possible
+    plot_distributions(dataset_dir)
