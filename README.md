@@ -1,4 +1,4 @@
-# Enhanced Drug–Disease Repositioning Pipeline
+# Drug–Disease Repositioning Dataset Builder
 
 This repository provides a fully automated pipeline to build a balanced drug–disease relationship dataset for drug repositioning research. It integrates data from DrugBank and OFFSIDES, applies advanced semantic standardization of disease names, samples with controlled sparsity and overlap, and offers comprehensive analysis and visualization tools.
 
