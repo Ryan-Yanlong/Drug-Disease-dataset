@@ -1,589 +1,349 @@
-"""
-DrugBank XML Parser
-Extracts drug information and therapeutic relationships from DrugBank XML files
-"""
+# FILE: drugbank_parser_enhanced.py
+#
+# DESCRIPTION:
+# Enhanced version that extracts more therapeutic relationships from DrugBank
+# by being more aggressive in parsing indication text and adding more sources.
 
 import xml.etree.ElementTree as ET
 import pandas as pd
 from tqdm import tqdm
 import re
 from collections import defaultdict
-import logging
-from typing import List, Dict, Tuple
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-
-class DrugBankParser:
-    """Parser for DrugBank XML files to extract drug and therapeutic information"""
+def parse_drugbank_xml(xml_file_path):
+    """
+    Parse DrugBank XML to extract drug info and therapeutic relationships.
+    This enhanced version extracts more therapeutic relationships.
+    """
+    print("Starting Enhanced DrugBank XML parsing...")
     
-    def __init__(self):
-        self.namespace = ''
-        self.ns_map = {}
-        self.stats = defaultdict(int)
-        
-    def parse_drugbank_xml(self, xml_file_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Parse DrugBank XML file and extract drug information and therapeutic relationships
-        
-        Args:
-            xml_file_path: Path to DrugBank XML file
-            
-        Returns:
-            Tuple of (drugs_df, therapeutic_df)
-        """
-        logger.info(f"Starting to parse DrugBank XML file: {xml_file_path}")
-        
-        try:
-            context = ET.iterparse(xml_file_path, events=('start', 'end'))
-            _, root = next(context)
-        except ET.ParseError as e:
-            logger.error(f"Failed to parse XML file: {e}")
-            return pd.DataFrame(), pd.DataFrame()
-        
-        # Extract namespace
-        if '}' in root.tag:
-            self.namespace = root.tag.split('}')[0][1:]
-        self.ns_map = {'db': self.namespace}
-        
-        drugs_data = []
-        therapeutic_data = []
-        drugs_without_info = []
-        
-        # Parse drug entries
-        for event, elem in tqdm(context, desc="Parsing DrugBank"):
-            if event == 'end' and elem.tag == f"{{{self.namespace}}}drug":
-                drug_info = self._extract_drug_info(elem)
-                if drug_info:
-                    drugs_data.append(drug_info['drug'])
-                    therapeutic_data.extend(drug_info['therapeutic'])
-                    if not drug_info['therapeutic']:
-                        drugs_without_info.append((drug_info['drug']['drug_id'], 
-                                                 drug_info['drug']['name']))
-                
-                # Clear memory
+    try:
+        context = ET.iterparse(xml_file_path, events=('start', 'end'))
+        _, root = next(context)
+    except ET.ParseError as e:
+        print(f"XML parsing failed! Error: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+    namespace = root.tag.split('}')[0][1:] if '}' in root.tag else ''
+    ns_map = {'db': namespace}
+    
+    drugs_data = []
+    therapeutic_data = []
+    
+    for event, elem in tqdm(context, desc="Parsing DrugBank XML"):
+        if event == 'end' and elem.tag == f"{{{namespace}}}drug":
+            if elem.attrib.get('type') != 'small molecule':
                 elem.clear()
                 root.clear()
-        
-        # Create dataframes
-        df_drugs = pd.DataFrame(drugs_data)
-        df_therapeutic = pd.DataFrame(therapeutic_data)
-        
-        # Log statistics
-        self._log_statistics(df_drugs, df_therapeutic, drugs_without_info)
-        
-        return df_drugs, df_therapeutic
+                continue
+            
+            db_id_node = elem.find('db:drugbank-id[@primary="true"]', ns_map)
+            name_node = elem.find('db:name', ns_map)
+            smiles_node = elem.find("db:calculated-properties/db:property[db:kind='SMILES']/db:value", ns_map)
+
+            if db_id_node is None or name_node is None or smiles_node is None or not smiles_node.text:
+                elem.clear()
+                root.clear()
+                continue
+
+            drugbank_id = db_id_node.text
+            name = name_node.text
+            smiles = smiles_node.text
+            
+            drugs_data.append({'drug_id': drugbank_id, 'name': name, 'smiles': smiles})
+            
+            # Extract therapeutic indications from various sources
+            indications = _extract_indications_enhanced(elem, ns_map, drugbank_id)
+            therapeutic_data.extend(indications)
+            
+            elem.clear()
+            root.clear()
     
-    def _extract_drug_info(self, elem) -> Dict:
-        """Extract drug information from XML element"""
-        # Only process small molecule drugs
-        if elem.attrib.get('type') != 'small molecule':
-            return None
-        
-        # Extract basic info
-        db_id_node = elem.find('db:drugbank-id[@primary="true"]', self.ns_map)
-        name_node = elem.find('db:name', self.ns_map)
-        
-        if db_id_node is None or name_node is None:
-            return None
-        
-        drugbank_id = db_id_node.text
-        name = name_node.text
-        
-        # Extract SMILES
-        smiles_node = elem.find("db:calculated-properties/db:property[db:kind='SMILES']/db:value", 
-                               self.ns_map)
-        smiles = smiles_node.text if smiles_node is not None else None
-        
-        if not smiles:
-            return None
-        
-        # Extract description
-        descr_node = elem.find('db:description', self.ns_map)
-        description = (
-            ET.tostring(descr_node, method='text', encoding='unicode').strip()
-            if descr_node is not None else ""
-        )
-        
-        drug_data = {
-            'drug_id': drugbank_id,
-            'name': name,
-            'smiles': smiles,
-            'description': description
-        }
-        
-        # Extract therapeutic information
-        therapeutic_data = self._extract_therapeutic_info(elem, drugbank_id)
-        
-        return {
-            'drug': drug_data,
-            'therapeutic': therapeutic_data
-        }
+    df_drugs = pd.DataFrame(drugs_data)
+    df_therapeutic = pd.DataFrame(therapeutic_data)
     
-    def _extract_therapeutic_info(self, elem, drug_id: str) -> List[Dict]:
-        """Extract all therapeutic information for a drug"""
-        therapeutic_info = []
-        indications_found = set()
-        
-        # 1. Extract from indications (highest priority)
-        therapeutic_info.extend(self._extract_indications(elem, drug_id, indications_found))
-        
-        # 2. Extract from categories
-        therapeutic_info.extend(self._extract_from_categories(elem, drug_id, indications_found))
-        
-        # 3. Extract from ATC codes
-        therapeutic_info.extend(self._extract_from_atc(elem, drug_id, indications_found))
-        
-        # 4. Extract from description if no other info found
-        if not therapeutic_info:
-            descr_node = elem.find('db:description', self.ns_map)
-            if descr_node is not None:
-                description = ET.tostring(descr_node, method='text', encoding='unicode').strip()
-                therapeutic_info.extend(self._extract_from_description(description, drug_id))
-        
-        # 5. Add generic classification for approved drugs if still no info
-        if not therapeutic_info:
-            therapeutic_info.extend(self._extract_from_groups(elem, drug_id))
-        
-        return therapeutic_info
+    # Deduplicate therapeutic relationships
+    df_therapeutic = df_therapeutic.drop_duplicates(subset=['drug_id', 'disease_name'])
     
-    def _extract_indications(self, elem, drug_id: str, indications_found: set) -> List[Dict]:
-        """Extract therapeutic relationships from indications"""
-        therapeutic_info = []
-        
-        # Method 1: db:indications/db:indication
-        indications_wrapper = elem.find('db:indications', self.ns_map)
-        if indications_wrapper is not None:
-            for ind in indications_wrapper.findall('db:indication', self.ns_map):
-                if ind.text and ind.text.strip():
-                    diseases = self._extract_diseases_from_indication(ind.text.strip())
-                    for disease in diseases:
-                        indications_found.add(disease.lower())
-                        therapeutic_info.append({
-                            'drug_id': drug_id,
-                            'disease_name': disease,
-                            'source': 'indication',
-                            'confidence': 1.0
-                        })
-                        self.stats['indication'] += 1
-        
-        # Method 2: Direct db:indication elements
-        for ind in elem.findall('db:indication', self.ns_map):
-            if ind.text and ind.text.strip():
-                diseases = self._extract_diseases_from_indication(ind.text.strip())
+    print("\nParsing complete!")
+    print(f"Found {len(df_drugs)} small molecule drugs with SMILES.")
+    print(f"Found {len(df_therapeutic)} therapeutic relationships.")
+    print(f"Unique diseases in therapeutic data: {df_therapeutic['disease_name'].nunique()}")
+    
+    return df_drugs, df_therapeutic
+
+def _extract_indications_enhanced(elem, ns_map, drugbank_id):
+    """Enhanced extraction of therapeutic indications."""
+    drug_therapeutic_info = []
+    indications_found = set()
+
+    # 1. Primary Indications (highest confidence: 1.0)
+    indication_tags = elem.findall('db:indication', ns_map)
+    indications_wrapper = elem.find('db:indications', ns_map)
+    if indications_wrapper is not None:
+        indication_tags.extend(indications_wrapper.findall('db:indication', ns_map))
+
+    for ind in indication_tags:
+        if ind.text and ind.text.strip():
+            diseases = _text_to_diseases_enhanced(ind.text.strip())
+            for disease in diseases:
+                if disease.lower() not in indications_found:
+                    indications_found.add(disease.lower())
+                    drug_therapeutic_info.append({
+                        'drug_id': drugbank_id, 'disease_name': disease,
+                        'source': 'indication', 'confidence': 1.0
+                    })
+    
+    # 2. Categories (high confidence: 0.9)
+    categories_elem = elem.find('db:categories', ns_map)
+    if categories_elem is not None:
+        for cat in categories_elem.findall('db:category/db:category', ns_map):
+            if cat.text:
+                diseases = _category_to_diseases_enhanced(cat.text.strip())
                 for disease in diseases:
                     if disease.lower() not in indications_found:
-                        indications_found.add(disease.lower())
-                        therapeutic_info.append({
-                            'drug_id': drug_id,
-                            'disease_name': disease,
-                            'source': 'indication',
-                            'confidence': 1.0
+                        drug_therapeutic_info.append({
+                            'drug_id': drugbank_id, 'disease_name': disease,
+                            'source': 'category', 'confidence': 0.9
                         })
-                        self.stats['indication'] += 1
-        
-        return therapeutic_info
+
+    # 3. ATC Codes (high confidence: 0.85)
+    atc_codes_elem = elem.find('db:atc-codes', ns_map)
+    if atc_codes_elem is not None:
+        for level in atc_codes_elem.findall('.//db:level', ns_map):
+            if level.text:
+                diseases = _atc_to_diseases_enhanced(level.text.strip())
+                for disease in diseases:
+                    if disease.lower() not in indications_found:
+                        drug_therapeutic_info.append({
+                            'drug_id': drugbank_id, 'disease_name': disease,
+                            'source': 'atc', 'confidence': 0.85
+                        })
     
-    def _extract_from_categories(self, elem, drug_id: str, indications_found: set) -> List[Dict]:
-        """Extract therapeutic relationships from drug categories"""
-        therapeutic_info = []
-        categories_elem = elem.find('db:categories', self.ns_map)
-        
-        if categories_elem is not None:
-            for cat in categories_elem.findall('db:category', self.ns_map):
-                cat_name = cat.find('db:category', self.ns_map)
-                if cat_name is not None and cat_name.text:
-                    diseases = self._convert_category_to_diseases(cat_name.text.strip())
-                    for disease in diseases:
-                        if disease and disease.lower() not in indications_found:
-                            therapeutic_info.append({
-                                'drug_id': drug_id,
-                                'disease_name': disease,
-                                'source': 'category',
-                                'confidence': 0.8
-                            })
-                            self.stats['category'] += 1
-        
-        return therapeutic_info
-    
-    def _extract_from_atc(self, elem, drug_id: str, indications_found: set) -> List[Dict]:
-        """Extract therapeutic relationships from ATC codes"""
-        therapeutic_info = []
-        atc_codes_elem = elem.find('db:atc-codes', self.ns_map)
-        
-        if atc_codes_elem is not None:
-            for atc in atc_codes_elem.findall('db:atc-code', self.ns_map):
-                for level in atc:
-                    level_tag = level.tag.replace(f"{{{self.namespace}}}", "")
-                    if level.text and 'level' in level_tag:
-                        diseases = self._convert_atc_to_diseases(level.text.strip())
-                        for disease in diseases:
-                            if disease and disease.lower() not in indications_found:
-                                therapeutic_info.append({
-                                    'drug_id': drug_id,
-                                    'disease_name': disease,
-                                    'source': 'atc',
-                                    'confidence': 0.7
-                                })
-                                self.stats['atc'] += 1
-        
-        return therapeutic_info
-    
-    def _extract_from_description(self, description: str, drug_id: str) -> List[Dict]:
-        """Extract therapeutic relationships from drug description"""
-        therapeutic_info = []
-        diseases = self._extract_diseases_from_text(description[:500])  # Only check first 500 chars
-        
+    # 4. Pharmacology description (medium confidence: 0.7)
+    pharmacology = elem.find('db:pharmacodynamics', ns_map)
+    if pharmacology is not None and pharmacology.text:
+        diseases = _text_to_diseases_enhanced(pharmacology.text[:500])  # First 500 chars
         for disease in diseases:
-            therapeutic_info.append({
-                'drug_id': drug_id,
-                'disease_name': disease,
-                'source': 'description',
-                'confidence': 0.5
-            })
-            self.stats['description'] += 1
-        
-        return therapeutic_info
+            if disease.lower() not in indications_found:
+                drug_therapeutic_info.append({
+                    'drug_id': drugbank_id, 'disease_name': disease,
+                    'source': 'pharmacology', 'confidence': 0.7
+                })
     
-    def _extract_from_groups(self, elem, drug_id: str) -> List[Dict]:
-        """Extract generic classification for approved drugs"""
-        therapeutic_info = []
-        groups_elem = elem.find('db:groups', self.ns_map)
-        
-        if groups_elem is not None:
-            for group in groups_elem.findall('db:group', self.ns_map):
-                if group.text and group.text.strip() == 'approved':
-                    therapeutic_info.append({
-                        'drug_id': drug_id,
-                        'disease_name': 'general therapeutic use',
-                        'source': 'group',
-                        'confidence': 0.3
-                    })
-                    self.stats['group'] += 1
-                    break
-        
-        return therapeutic_info
-    
-    def _extract_diseases_from_indication(self, indication_text: str) -> List[str]:
-        """Extract specific disease names from indication text"""
-        diseases = []
-        text_lower = indication_text.lower()
-        
-        # Common indication patterns
-        patterns = [
-            r'treatment of (.+?)(?:\.|,|;|$)',
-            r'indicated for (.+?)(?:\.|,|;|$)',
-            r'used for (.+?)(?:\.|,|;|$)',
-            r'management of (.+?)(?:\.|,|;|$)',
-            r'therapy for (.+?)(?:\.|,|;|$)',
-            r'prevention of (.+?)(?:\.|,|;|$)',
-            r'prophylaxis of (.+?)(?:\.|,|;|$)',
-            r'relief of (.+?)(?:\.|,|;|$)',
-        ]
-        
-        # Extract diseases using patterns
-        for pattern in patterns:
-            matches = re.findall(pattern, text_lower)
-            for match in matches:
-                # Clean and split multiple diseases
-                diseases_in_match = re.split(r' and | or |, ', match)
-                for disease in diseases_in_match:
-                    disease = disease.strip()
-                    # Remove common modifiers
-                    disease = re.sub(r'^(the |acute |chronic |severe |mild |moderate )', '', disease)
-                    disease = re.sub(r'( in patients| in adults| in children).*$', '', disease)
-                    if len(disease) > 3 and disease not in ['use', 'users', 'patient', 'patients']:
-                        diseases.append(disease)
-        
-        # If no patterns matched, return simplified full text
-        if not diseases and len(indication_text) < 100:
-            simplified = re.sub(r'^(For |Used for |Indicated for |Treatment of )', '', indication_text)
-            simplified = simplified.strip().rstrip('.')
-            if len(simplified) > 3:
-                diseases.append(simplified)
-        
-        return diseases[:3]  # Return at most 3 diseases
-    
-    def _convert_category_to_diseases(self, category: str) -> List[str]:
-        """Convert drug category to disease list"""
-        # Category to disease mapping
-        category_mapping = {
-            # Anti-infective agents
-            'Anti-Bacterial Agents': ['bacterial infections'],
-            'Antibiotics': ['bacterial infections'],
-            'Antiviral Agents': ['viral infections'],
-            'Antifungal Agents': ['fungal infections'],
-            'Antiparasitic Products': ['parasitic infections'],
-            'Anti-Infective Agents': ['infections'],
-            'Antimalarials': ['malaria'],
-            'Antitubercular Agents': ['tuberculosis'],
-            
-            # Antineoplastic agents
-            'Antineoplastic Agents': ['cancer'],
-            'Antimetabolites': ['cancer'],
-            'Antineoplastic and Immunomodulating Agents': ['cancer', 'immune disorders'],
-            
-            # Cardiovascular agents
-            'Antihypertensive Agents': ['hypertension'],
-            'Antiarrhythmic Agents': ['arrhythmia'],
-            'Antianginal Agents': ['angina'],
-            'Cardiovascular Agents': ['cardiovascular diseases'],
-            'Vasodilator Agents': ['vascular disorders'],
-            'Platelet Aggregation Inhibitors': ['thrombosis'],
-            'Anticoagulants': ['blood clots', 'thrombosis'],
-            'Diuretics': ['fluid retention', 'hypertension'],
-            'Beta Blocking Agents': ['hypertension', 'heart diseases'],
-            'Calcium Channel Blockers': ['hypertension', 'angina'],
-            'ACE Inhibitors': ['hypertension', 'heart failure'],
-            
-            # Neurological/Psychiatric agents
-            'Antidepressive Agents': ['depression'],
-            'Antipsychotic Agents': ['psychosis', 'schizophrenia'],
-            'Anti-Anxiety Agents': ['anxiety'],
-            'Anxiolytics': ['anxiety'],
-            'Hypnotics and Sedatives': ['insomnia'],
-            'Anticonvulsants': ['epilepsy', 'seizures'],
-            'Antiparkinsonian Agents': ['parkinson disease'],
-            'Analgesics': ['pain'],
-            'Antimigraine Agents': ['migraine'],
-            
-            # Metabolic/Endocrine agents
-            'Antidiabetic Agents': ['diabetes'],
-            'Hypoglycemic Agents': ['diabetes'],
-            'Thyroid Agents': ['thyroid disorders'],
-            'Lipid Regulating Agents': ['dyslipidemia', 'high cholesterol'],
-            'Anti-Obesity Agents': ['obesity'],
-            
-            # Gastrointestinal agents
-            'Gastrointestinal Agents': ['gastrointestinal disorders'],
-            'Antiemetics': ['nausea', 'vomiting'],
-            'Antacids': ['acid reflux', 'heartburn'],
-            'Proton Pump Inhibitors': ['acid reflux', 'peptic ulcers'],
-            'Antiulcer Agents': ['ulcers'],
-            'Laxatives': ['constipation'],
-            'Antidiarrheals': ['diarrhea'],
-            
-            # Respiratory agents
-            'Respiratory System Agents': ['respiratory diseases'],
-            'Bronchodilator Agents': ['asthma', 'COPD'],
-            'Antitussive Agents': ['cough'],
-            'Antihistamines': ['allergies', 'allergic rhinitis'],
-            
-            # Anti-inflammatory/Immune agents
-            'Anti-Inflammatory Agents': ['inflammation'],
-            'Immunosuppressive Agents': ['autoimmune diseases', 'organ rejection'],
-            'Antirheumatic Agents': ['rheumatoid arthritis'],
-            
-            # Other
-            'Dermatologic Agents': ['skin conditions'],
-            'Hematologic Agents': ['blood disorders'],
-            'Antianemic Agents': ['anemia'],
-        }
-        
-        # Try exact match first
-        if category in category_mapping:
-            return category_mapping[category]
-        
-        # Try partial match
-        category_lower = category.lower()
-        diseases = []
-        
-        for key, value in category_mapping.items():
-            key_lower = key.lower()
-            if key_lower in category_lower or category_lower in key_lower:
-                diseases.extend(value)
-        
-        # If no match found, try generic rules
-        if not diseases:
-            if 'agents' in category_lower and 'anti' in category_lower:
-                match = re.search(r'anti[- ]?(\w+)', category_lower)
-                if match:
-                    target = match.group(1)
-                    if target not in ['agents', 'drug', 'drugs']:
-                        diseases.append(f"{target}")
-        
-        return diseases
-    
-    def _convert_atc_to_diseases(self, atc_text: str) -> List[str]:
-        """Convert ATC classification to disease list"""
-        atc_text_lower = atc_text.lower()
-        
-        # ATC to disease mapping
-        atc_mapping = {
-            # Main systems
-            'alimentary tract and metabolism': ['gastrointestinal disorders', 'metabolic disorders'],
-            'blood and blood forming organs': ['blood disorders', 'anemia'],
-            'cardiovascular system': ['cardiovascular diseases'],
-            'dermatologicals': ['skin diseases'],
-            'genito urinary system and sex hormones': ['genitourinary disorders', 'hormonal disorders'],
-            'systemic hormonal preparations': ['hormonal disorders'],
-            'antiinfectives for systemic use': ['infections'],
-            'antineoplastic and immunomodulating agents': ['cancer', 'immune disorders'],
-            'musculo-skeletal system': ['musculoskeletal disorders'],
-            'nervous system': ['neurological disorders'],
-            'antiparasitic products': ['parasitic infections'],
-            'respiratory system': ['respiratory diseases'],
-            'sensory organs': ['eye diseases', 'ear disorders'],
-            
-            # Specific subcategories
-            'antibacterials for systemic use': ['bacterial infections'],
-            'antimycotics for systemic use': ['fungal infections'],
-            'antivirals for systemic use': ['viral infections'],
-            'antidiabetes drugs': ['diabetes'],
-            'psycholeptics': ['psychiatric disorders', 'anxiety', 'insomnia'],
-            'psychoanaleptics': ['depression', 'ADHD'],
-            'analgesics': ['pain'],
-            'antiepileptics': ['epilepsy'],
-            'anti-parkinson drugs': ['parkinson disease'],
-            'cardiac therapy': ['heart diseases'],
-            'antihypertensives': ['hypertension'],
-            'diuretics': ['fluid retention', 'hypertension'],
-            'lipid modifying agents': ['dyslipidemia', 'high cholesterol'],
-            'antithrombotic agents': ['thrombosis', 'stroke prevention'],
-            'drugs for obstructive airway diseases': ['asthma', 'COPD'],
-            'antihistamines for systemic use': ['allergies'],
-        }
-        
-        diseases = []
-        
-        # Try matching
-        for key, value in atc_mapping.items():
-            if key in atc_text_lower:
-                diseases.extend(value)
-        
-        # If no match, try pattern-based extraction
-        if not diseases:
-            if 'therapy' in atc_text_lower:
-                match = re.search(r'(\w+)\s+therapy', atc_text_lower)
-                if match:
-                    organ = match.group(1)
-                    if organ not in ['drug', 'drugs']:
-                        diseases.append(f"{organ} disorders")
-            elif 'drugs for' in atc_text_lower:
-                match = re.search(r'drugs for (.+)', atc_text_lower)
-                if match:
-                    diseases.append(match.group(1).strip())
-        
-        return list(set(diseases))
-    
-    def _extract_diseases_from_text(self, text: str) -> List[str]:
-        """Extract disease names from free text"""
-        diseases = []
-        text_lower = text.lower()
-        
-        # Disease extraction patterns
-        patterns = [
-            r'treatment of ([^,\.;]+)',
-            r'indicated for ([^,\.;]+)',
-            r'used for ([^,\.;]+)',
-            r'effective against ([^,\.;]+)',
-            r'management of ([^,\.;]+)',
-            r'therapy for ([^,\.;]+)',
-            r'prevention of ([^,\.;]+)',
-            r'relief of ([^,\.;]+)',
-        ]
-        
-        # Common disease keywords
-        disease_keywords = [
-            'infection', 'cancer', 'tumor', 'carcinoma', 'lymphoma', 'leukemia',
-            'disease', 'disorder', 'syndrome', 'condition',
-            'pain', 'inflammation', 'fever', 'allergy', 'allergies',
-            'diabetes', 'hypertension', 'depression', 'anxiety', 'psychosis',
-            'epilepsy', 'seizure', 'asthma', 'arthritis', 'osteoporosis',
-            'migraine', 'headache', 'insomnia', 'obesity',
-            'anemia', 'pneumonia', 'bronchitis', 'hepatitis',
-            'thrombosis', 'ulcer', 'nausea', 'vomiting', 'diarrhea',
-        ]
-        
-        # Extract using patterns
-        for pattern in patterns:
-            matches = re.findall(pattern, text_lower)
-            for match in matches:
-                match = match.strip()
-                # Clean up
-                match = re.sub(r'^(the |acute |chronic |severe |mild |moderate )', '', match)
-                match = re.sub(r'( in patients| in adults| in children).*$', '', match)
+    # 5. Mechanism of action (medium confidence: 0.65)
+    mechanism = elem.find('db:mechanism-of-action', ns_map)
+    if mechanism is not None and mechanism.text:
+        diseases = _mechanism_to_diseases(mechanism.text[:300])
+        for disease in diseases:
+            if disease.lower() not in indications_found:
+                drug_therapeutic_info.append({
+                    'drug_id': drugbank_id, 'disease_name': disease,
+                    'source': 'mechanism', 'confidence': 0.65
+                })
                 
-                # Check if contains disease keyword
-                if any(keyword in match for keyword in disease_keywords):
-                    if len(match) > 3 and match not in diseases:
-                        diseases.append(match)
-        
-        # Deduplicate and limit
-        unique_diseases = []
-        seen = set()
-        for disease in diseases:
-            if disease.lower() not in seen:
-                seen.add(disease.lower())
-                unique_diseases.append(disease)
-        
-        return unique_diseases[:3]
-    
-    def _log_statistics(self, df_drugs: pd.DataFrame, df_therapeutic: pd.DataFrame, 
-                       drugs_without_info: List[Tuple[str, str]]):
-        """Log parsing statistics"""
-        logger.info(f"Parsing completed!")
-        logger.info(f"Found {len(df_drugs)} small molecule drugs")
-        logger.info(f"Found {len(df_therapeutic)} therapeutic relationships")
-        
-        logger.info("Therapeutic information sources:")
-        for source, count in self.stats.items():
-            logger.info(f"  {source}: {count}")
-        
-        # Statistics on drug coverage
-        drugs_with_info = df_therapeutic['drug_id'].nunique()
-        coverage = drugs_with_info / len(df_drugs) * 100 if len(df_drugs) > 0 else 0
-        logger.info(f"Drugs with therapeutic information: {drugs_with_info} ({coverage:.1f}%)")
-        
-        # Average relationships per drug
-        avg_relations = len(df_therapeutic) / drugs_with_info if drugs_with_info > 0 else 0
-        logger.info(f"Average therapeutic relationships per drug: {avg_relations:.2f}")
-        
-        # Log some drugs without info
-        if drugs_without_info:
-            logger.info(f"Drugs without therapeutic information: {len(drugs_without_info)}")
-            logger.info("Examples (first 5):")
-            for drug_id, name in drugs_without_info[:5]:
-                logger.info(f"  {drug_id}: {name}")
+    return drug_therapeutic_info
 
+def _text_to_diseases_enhanced(text):
+    """Enhanced extraction of disease names from free text."""
+    diseases = []
+    text_lower = text.lower()
+    
+    # Expanded patterns for disease extraction
+    patterns = [
+        r'treatment of (.+?)(?:\.|,|;|and|$)',
+        r'indicated for (?:the )?(.+?)(?:\.|,|;|and|$)',
+        r'management of (.+?)(?:\.|,|;|and|$)',
+        r'therapy (?:of|for) (.+?)(?:\.|,|;|and|$)',
+        r'used (?:in|for) (?:the )?(.+?)(?:\.|,|;|and|$)',
+        r'relief of (.+?)(?:\.|,|;|and|$)',
+        r'prophylaxis of (.+?)(?:\.|,|;|and|$)',
+        r'prevention of (.+?)(?:\.|,|;|and|$)',
+        r'effective against (.+?)(?:\.|,|;|and|$)',
+        r'treats (.+?)(?:\.|,|;|and|$)',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text_lower)
+        for match in matches:
+            # Split on common conjunctions
+            sub_diseases = re.split(r'\s+(?:and|or)\s+', match)
+            for sub_disease in sub_diseases:
+                # Clean up the disease name
+                disease = re.sub(r'^(the|acute|chronic|severe|mild|moderate)\s+', '', sub_disease).strip()
+                disease = re.sub(r'\s+in\s+(?:adults|children|patients).*$', '', disease)
+                disease = re.sub(r'\s+\(.*?\)', '', disease)  # Remove parenthetical info
+                disease = disease.rstrip('.,;')
+                
+                if disease and len(disease) > 3 and not any(skip in disease for skip in ['patient', 'dose', 'mg', 'ml']):
+                    diseases.append(disease)
+    
+    # Also look for specific disease mentions
+    disease_keywords = [
+        'hypertension', 'diabetes', 'cancer', 'infection', 'inflammation',
+        'pain', 'fever', 'anxiety', 'depression', 'epilepsy', 'asthma',
+        'arthritis', 'ulcer', 'migraine', 'insomnia', 'obesity', 'allergy',
+        'pneumonia', 'bronchitis', 'hepatitis', 'gastritis', 'dermatitis',
+        'psoriasis', 'eczema', 'acne', 'glaucoma', 'cataract',
+        'osteoporosis', 'anemia', 'thrombosis', 'embolism', 'stroke',
+        'angina', 'arrhythmia', 'heart failure', 'kidney disease',
+        'liver disease', 'thyroid disorder', 'parkinson', 'alzheimer',
+        'schizophrenia', 'bipolar disorder', 'adhd', 'autism'
+    ]
+    
+    for keyword in disease_keywords:
+        if keyword in text_lower and keyword not in [d.lower() for d in diseases]:
+            diseases.append(keyword)
+    
+    return list(set(d for d in diseases if len(d) > 3))[:5]  # Max 5 per text
 
-def main():
-    """Main function to run the parser"""
-    import argparse
+def _category_to_diseases_enhanced(category):
+    """Enhanced conversion of drug categories to disease names."""
+    category_lower = category.lower()
+    diseases = []
     
-    parser = argparse.ArgumentParser(description='Parse DrugBank XML file')
-    parser.add_argument('xml_file', help='Path to DrugBank XML file')
-    parser.add_argument('--output-dir', default='.', help='Output directory for CSV files')
+    # Expanded category mappings
+    category_map = {
+        'antihypertensive': ['hypertension', 'high blood pressure'],
+        'antidepressive': ['depression', 'major depressive disorder'],
+        'anti-anxiety': ['anxiety', 'anxiety disorder'],
+        'anxiolytic': ['anxiety', 'anxiety disorder'],
+        'anti-bacterial': ['bacterial infection', 'infection'],
+        'antibiotic': ['bacterial infection', 'infection'],
+        'antineoplastic': ['cancer', 'neoplasm', 'tumor'],
+        'antidiabetic': ['diabetes', 'diabetes mellitus'],
+        'anti-inflammatory': ['inflammation', 'inflammatory disease'],
+        'analgesic': ['pain', 'chronic pain'],
+        'antipyretic': ['fever', 'pyrexia'],
+        'anticonvulsant': ['epilepsy', 'seizure'],
+        'antiepileptic': ['epilepsy', 'seizure disorder'],
+        'antipsychotic': ['schizophrenia', 'psychosis'],
+        'antihistamine': ['allergy', 'allergic reaction'],
+        'antiviral': ['viral infection', 'virus infection'],
+        'antifungal': ['fungal infection', 'mycosis'],
+        'antiemetic': ['nausea', 'vomiting'],
+        'antacid': ['acid reflux', 'heartburn', 'peptic ulcer'],
+        'bronchodilator': ['asthma', 'copd', 'bronchospasm'],
+        'diuretic': ['hypertension', 'edema', 'fluid retention'],
+        'immunosuppressant': ['autoimmune disease', 'organ rejection'],
+        'anticoagulant': ['thrombosis', 'blood clot', 'embolism'],
+        'antiarrhythmic': ['arrhythmia', 'irregular heartbeat'],
+        'antianginal': ['angina', 'chest pain'],
+        'antispasmodic': ['muscle spasm', 'cramp'],
+        'antimigraine': ['migraine', 'headache'],
+        'hypnotic': ['insomnia', 'sleep disorder'],
+        'sedative': ['anxiety', 'insomnia', 'agitation'],
+        'muscle relaxant': ['muscle spasm', 'muscle pain'],
+        'antiparkinson': ['parkinson disease', 'parkinsonism'],
+        'antithyroid': ['hyperthyroidism', 'thyroid disorder'],
+        'antiulcer': ['peptic ulcer', 'gastric ulcer'],
+        'laxative': ['constipation', 'bowel disorder'],
+        'antidiarrheal': ['diarrhea', 'bowel disorder'],
+        'antiglaucoma': ['glaucoma', 'ocular hypertension'],
+        'antiobesity': ['obesity', 'weight gain'],
+        'antilipemic': ['hyperlipidemia', 'high cholesterol'],
+        'vasodilator': ['hypertension', 'peripheral vascular disease'],
+    }
     
-    args = parser.parse_args()
+    for key, values in category_map.items():
+        if key in category_lower:
+            diseases.extend(values)
     
-    # Create parser instance
-    drugbank_parser = DrugBankParser()
-    
-    # Parse XML
-    df_drugs, df_therapeutic = drugbank_parser.parse_drugbank_xml(args.xml_file)
-    
-    # Save results
-    import os
-    drugs_output = os.path.join(args.output_dir, 'drugbank_drugs.csv')
-    therapeutic_output = os.path.join(args.output_dir, 'drugbank_therapeutic_relations.csv')
-    
-    df_drugs.to_csv(drugs_output, index=False)
-    df_therapeutic.to_csv(therapeutic_output, index=False)
-    
-    logger.info(f"Data saved to:")
-    logger.info(f"  - {drugs_output}")
-    logger.info(f"  - {therapeutic_output}")
-    
-    # Display some examples
-    logger.info("\nTherapeutic relationship examples (first 10):")
-    sample = df_therapeutic.head(10)
-    for _, row in sample.iterrows():
-        logger.info(f"  {row['drug_id']} -> {row['disease_name']} "
-                   f"(source: {row['source']}, confidence: {row['confidence']})")
+    return list(set(diseases))
 
+def _atc_to_diseases_enhanced(atc_text):
+    """Enhanced conversion of ATC descriptions to diseases."""
+    atc_lower = atc_text.lower()
+    diseases = []
+    
+    # Expanded ATC mappings
+    atc_map = {
+        'antihypertensives': ['hypertension', 'high blood pressure'],
+        'antidepressants': ['depression', 'depressive disorder'],
+        'antineoplastic': ['cancer', 'neoplasm'],
+        'drugs used in diabetes': ['diabetes', 'diabetes mellitus'],
+        'cardiac therapy': ['heart disease', 'cardiac disorder'],
+        'analgesics': ['pain', 'chronic pain'],
+        'psycholeptics': ['anxiety', 'psychosis', 'insomnia'],
+        'psychoanaleptics': ['depression', 'adhd', 'dementia'],
+        'antiepileptics': ['epilepsy', 'seizure disorder'],
+        'anti-inflammatory': ['inflammation', 'arthritis'],
+        'antibacterials': ['bacterial infection', 'infection'],
+        'antivirals': ['viral infection', 'virus infection'],
+        'antimycotics': ['fungal infection', 'mycosis'],
+        'antiprotozoals': ['protozoal infection', 'parasitic infection'],
+        'immunosuppressants': ['autoimmune disease', 'transplant rejection'],
+        'antithrombotic': ['thrombosis', 'embolism'],
+        'diuretics': ['hypertension', 'edema'],
+        'beta blocking': ['hypertension', 'arrhythmia', 'angina'],
+        'calcium channel': ['hypertension', 'angina'],
+        'lipid modifying': ['hyperlipidemia', 'high cholesterol'],
+        'antacids': ['acid reflux', 'peptic ulcer'],
+        'antiemetics': ['nausea', 'vomiting'],
+        'laxatives': ['constipation'],
+        'antidiarrheals': ['diarrhea'],
+        'antihistamines': ['allergy', 'allergic rhinitis'],
+        'corticosteroids': ['inflammation', 'autoimmune disease', 'asthma'],
+        'sex hormones': ['hormone deficiency', 'menopause', 'contraception'],
+        'thyroid': ['thyroid disorder', 'hypothyroidism', 'hyperthyroidism'],
+        'antidiabetics': ['diabetes', 'hyperglycemia'],
+        'ophthalmological': ['glaucoma', 'eye infection', 'dry eye'],
+        'dermatological': ['skin disease', 'dermatitis', 'psoriasis'],
+    }
+    
+    for key, values in atc_map.items():
+        if key in atc_lower:
+            diseases.extend(values)
+    
+    return list(set(diseases))
+
+def _mechanism_to_diseases(text):
+    """Extract diseases from mechanism of action text."""
+    diseases = []
+    text_lower = text.lower()
+    
+    # Look for receptor/target mentions that imply diseases
+    mechanism_map = {
+        'dopamine': ['parkinson disease', 'schizophrenia'],
+        'serotonin': ['depression', 'anxiety'],
+        'norepinephrine': ['depression', 'adhd'],
+        'gaba': ['epilepsy', 'anxiety'],
+        'histamine': ['allergy', 'allergic reaction'],
+        'prostaglandin': ['inflammation', 'pain', 'fever'],
+        'insulin': ['diabetes'],
+        'glucagon': ['diabetes', 'hypoglycemia'],
+        'thyroid': ['thyroid disorder'],
+        'estrogen': ['menopause', 'osteoporosis'],
+        'testosterone': ['hypogonadism'],
+        'acetylcholine': ['alzheimer disease', 'myasthenia gravis'],
+        'angiotensin': ['hypertension', 'heart failure'],
+        'beta-adrenergic': ['hypertension', 'heart failure', 'asthma'],
+        'calcium channel': ['hypertension', 'angina'],
+        'sodium channel': ['epilepsy', 'arrhythmia'],
+        'potassium channel': ['arrhythmia', 'epilepsy'],
+        'opioid': ['pain'],
+        'cannabinoid': ['pain', 'nausea'],
+        'benzodiazepine': ['anxiety', 'insomnia', 'seizure'],
+    }
+    
+    for key, values in mechanism_map.items():
+        if key in text_lower:
+            diseases.extend(values)
+    
+    return list(set(diseases))
 
 if __name__ == '__main__':
-    main()
+    import os
+    print("Running enhanced drugbank_parser as a standalone script...")
+    if os.path.exists('drugbank.xml'):
+        df_drugs, df_therapeutic = parse_drugbank_xml('drugbank.xml')
+        
+        # Save results
+        df_drugs.to_csv('drugbank_drugs_enhanced.csv', index=False)
+        df_therapeutic.to_csv('drugbank_therapeutic_relations_enhanced.csv', index=False)
+        
+        print("\nStand-alone run complete. Files saved:")
+        print("  - drugbank_drugs_enhanced.csv")
+        print("  - drugbank_therapeutic_relations_enhanced.csv")
+    else:
+        print("\n'drugbank.xml' not found. Skipping stand-alone execution.")
