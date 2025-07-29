@@ -29,7 +29,7 @@ This repository provides a fully automated pipeline to build a balanced drug–d
 
 * **DrugBank** (Version 5.1.9): Comprehensive resource for drug data and interactions. Downloaded from [https://go.drugbank.com](https://go.drugbank.com) on July 1, 2025. ⬥ Wishart DS et al., DrugBank 5.0: a major update to the DrugBank database for 2018. *Nucleic Acids Res*. 2018;46(D1)\:D1074–D1082.
 
-* **OFFSIDES** (Side‑effect data): High‑throughput side‑effect dataset by Tatonetti et al., available at [https://maayanlab.cloud/Offsides](https://maayanlab.cloud/Offsides) (2012). ⬥ Tatonetti NP, Ye PP, Daneshjou R, Altman RB. Data-driven prediction of drug effects and interactions. *Science Translational Medicine*. 2012;4(125):125ra31.
+* **OFFSIDES** (Side‑effect data): High‑throughput side‑effect dataset by Tatonetti et al., available at [https://nsides.io](https://nsides.io). ⬥ Chandak P, Tatonetti NP. Using Machine Learning to Identify Adverse Drug Effects Posing Increased Risk to Women. Patterns (N Y). 2020 Oct 9;1(7):100108. doi: 10.1016/j.patter.2020.100108. Epub 2020 Sep 22. PMID: 33179017; PMCID: PMC7654817.
 
 ## 🏃‍♂️ Quick Start
 
