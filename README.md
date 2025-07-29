@@ -77,9 +77,7 @@ This repository provides a fully automated pipeline to build a balanced drug–d
     "min_treatment_diseases_ratio": 0.4
   ```
 
-n  }
 
-```
 
 ---
 
